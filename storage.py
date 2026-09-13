@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+from datetime import datetime, timezone
 from pathlib import Path
 
 import aiohttp
@@ -154,8 +155,15 @@ class D1:
         return {int(r["user_id"]): int(r["total"]) for r in res.get("results", [])}
 
     async def get_all_users(self) -> list[dict]:
-        res = await self.query("SELECT user_id,total,last_seen FROM users")
+        res = await self.query("SELECT user_id,total,last_seen,has_status,status_checked FROM users")
         return res.get("results", [])
+
+    async def set_status(self, user_id: int, has_status: bool):
+        now = datetime.now(timezone.utc).isoformat()
+        await self.query(
+            "UPDATE users SET has_status=?, status_checked=? WHERE user_id=?",
+            [1 if has_status else 0, now, str(user_id)],
+        )
 
     async def get_stats(self) -> dict:
         res = await self.query(

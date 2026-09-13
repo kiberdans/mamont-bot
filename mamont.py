@@ -180,20 +180,17 @@ async def process_message(msg: discord.Message, guild: discord.Guild):
         return
 
     is_whitelisted = member.id in ALLOWED_USER_IDS
-    if is_whitelisted or has_required_status(member):
-        ts = msg.created_at.astimezone(timezone.utc).isoformat()
-        inserted = await db.record_message(msg.id, member.id, 1, ts)
-        if inserted:
-            total = await db.get_user_total(member.id)
-            await update_user_roles(member, total)
-    else:
-        for rid in ROLE_THRESHOLDS:
-            r = guild.get_role(rid)
-            if r and r in member.roles:
-                try:
-                    await member.remove_roles(r, reason="🦣 Статус не найден")
-                except Exception:
-                    pass
+    has_status = is_whitelisted or has_required_status(member)
+
+    ts = msg.created_at.astimezone(timezone.utc).isoformat()
+    inserted = await db.record_message(msg.id, member.id, 1, ts)
+    if inserted:
+        total = await db.get_user_total(member.id)
+        await update_user_roles(member, total)
+    try:
+        await db.set_status(member.id, has_status)
+    except Exception as e:
+        logger.warning(f"Не удалось обновить статус {member.id}: {e}")
 
     update_last_message_id(msg.id)
 
@@ -230,17 +227,7 @@ async def run_scan(channel, limit: int, batch_mode: bool = False, ignore_last_id
 
 async def full_rebuild(channel) -> int:
     """Полный пересбор статистики из всей истории канала. Возвращает число учтённых сообщений."""
-    guild = channel.guild
     await db.reset()
-
-    valid_ids = set(ALLOWED_USER_IDS)
-    if guild:
-        try:
-            async for member in guild.fetch_members(limit=None):
-                if has_required_status(member):
-                    valid_ids.add(member.id)
-        except Exception as e:
-            logger.warning(f"Не удалось получить участников: {e}")
 
     batch = []
     counted = 0
@@ -252,8 +239,6 @@ async def full_rebuild(channel) -> int:
         if m.author.bot:
             continue
         if not is_mammoth_message(m):
-            continue
-        if m.author.id not in valid_ids:
             continue
         ts = m.created_at.astimezone(timezone.utc).isoformat()
         batch.append((str(m.id), str(m.author.id), 1, ts))
@@ -301,8 +286,6 @@ async def status_verification():
     guild = ch.guild
     for row in await db.get_all_users():
         uid = int(row["user_id"])
-        if uid in ALLOWED_USER_IDS:
-            continue
         try:
             member = await guild.fetch_member(uid)
         except asyncio.TimeoutError:
@@ -314,14 +297,11 @@ async def status_verification():
             logger.warning(f"Ошибка проверки статуса {uid}: {e}")
             continue
 
-        if not has_required_status(member):
-            for rid in ROLE_THRESHOLDS:
-                r = guild.get_role(rid)
-                if r and r in member.roles:
-                    try:
-                        await member.remove_roles(r, reason="🦣 Статус утерян")
-                    except Exception:
-                        pass
+        has_status = (uid in ALLOWED_USER_IDS) or has_required_status(member)
+        try:
+            await db.set_status(uid, has_status)
+        except Exception as e:
+            logger.warning(f"Не удалось сохранить статус {uid}: {e}")
         await asyncio.sleep(0.5)
 
 
@@ -505,12 +485,13 @@ async def mammoth_user(interaction: discord.Interaction, user: discord.User):
     embed.add_field(name="Мамонтов", value=str(cnt), inline=True)
     embed.add_field(name="Последний", value=last[:19] if last else "—", inline=True)
 
-    status_ok = False
+    status_ok = bool(data["has_status"]) if data else False
+    status_checked = data["status_checked"] if data else None
     whitelisted = uid in ALLOWED_USER_IDS
     if interaction.guild:
         member = interaction.guild.get_member(uid)
         if member:
-            status_ok = has_required_status(member)
+            status_ok = whitelisted or has_required_status(member)
 
     if whitelisted:
         status_text = "⭐ Белый список"
@@ -518,6 +499,8 @@ async def mammoth_user(interaction: discord.Interaction, user: discord.User):
         status_text = "✅ Статус активен"
     else:
         status_text = "❌ Нет статуса"
+    if status_checked and not whitelisted:
+        status_text += f"\n(проверен {status_checked[:19]})"
     embed.add_field(name="Статус", value=status_text, inline=True)
 
     if interaction.guild:
@@ -808,22 +791,18 @@ async def on_ready():
         logger.info("🔍 Стартовая проверка статусов...")
         for row in await db.get_all_users():
             uid = int(row["user_id"])
-            if uid in ALLOWED_USER_IDS:
-                continue
             try:
                 member = await ch.guild.fetch_member(uid)
-                if not has_required_status(member):
-                    for rid in ROLE_THRESHOLDS:
-                        r = ch.guild.get_role(rid)
-                        if r and r in member.roles:
-                            try:
-                                await member.remove_roles(r, reason="🦣 Старт: статус отсутствует")
-                            except Exception:
-                                pass
             except discord.NotFound:
-                pass
+                continue
             except Exception as e:
                 logger.warning(f"⚠️ {uid}: {e}")
+                continue
+            has_status = (uid in ALLOWED_USER_IDS) or has_required_status(member)
+            try:
+                await db.set_status(uid, has_status)
+            except Exception as e:
+                logger.warning(f"Не удалось сохранить статус {uid}: {e}")
             await asyncio.sleep(0.5)
         logger.info("✅ Стартовая проверка завершена.")
 

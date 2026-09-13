@@ -65,14 +65,6 @@ async def on_ready():
         logger.error("Целевой канал не найден")
         await client.close()
         return
-    guild = ch.guild
-
-    valid = set(ALLOWED)
-    logger.info("Собираю участников со статусом...")
-    async for m in guild.fetch_members(limit=None):
-        if has_status(m):
-            valid.add(m.id)
-    logger.info(f"Валидных пользователей: {len(valid)}")
 
     await db.reset()
     logger.info("D1 очищена, начинаю обход истории...")
@@ -86,8 +78,6 @@ async def on_ready():
         if m.author.bot:
             continue
         if not is_mammoth_message(m):
-            continue
-        if m.author.id not in valid:
             continue
         ts = m.created_at.astimezone(timezone.utc).isoformat()
         batch.append((str(m.id), str(m.author.id), 1, ts))
@@ -104,6 +94,10 @@ async def on_ready():
     if newest:
         with open("data/last_msg.txt", "w") as f:
             f.write(str(newest))
+        try:
+            await db.set_meta("last_msg", str(newest))
+        except Exception as e:
+            logger.warning(f"Не удалось записать last_msg в D1: {e}")
 
     stats = await db.get_stats()
     top = await db.get_top(10)
