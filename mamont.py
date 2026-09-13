@@ -326,6 +326,10 @@ async def flush_state_loop():
             _last_msg_dirty = False
         except Exception as e:
             logger.warning(f"Не удалось сохранить чекпоинт: {e}")
+    try:
+        await db.set_meta("heartbeat", str(int(time.time())))
+    except Exception:
+        pass
     await db.flush_queue()
 
 
