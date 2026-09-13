@@ -554,9 +554,9 @@ async def mammoth_cleanreactions(interaction: discord.Interaction):
         return
     await interaction.response.defer(ephemeral=True)
 
-    ch = bot.get_channel(TARGET_CHANNEL_ID)
+    ch = interaction.channel
     if not ch:
-        await interaction.followup.send("❌ Целевой канал не найден.", ephemeral=True)
+        await interaction.followup.send("❌ Канал недоступен.", ephemeral=True)
         return
 
     await interaction.followup.send("🧹 Чищу реакции...", ephemeral=True)
