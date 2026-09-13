@@ -14,6 +14,10 @@
   "status_check_interval_hours": 1,
   "mammoth_role_thresholds": {},
   "strict_mammoth_only": true,
+  "allowed_reactions": [
+    "🤝", "⭐", "🦣", "🍌", "🐖", "💨", "💀", "✅", "❤️",
+    "🇿", "🇻", "🅾️", "⭕", "🇴", "🇨", "💬", "💭", "🇦", "🇰"
+  ],
   "cloudflare": {
     "account_id": "CLOUDFLARE_ACCOUNT_ID",
     "database_id": "CLOUDFLARE_D1_DATABASE_ID",

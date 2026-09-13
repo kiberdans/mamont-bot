@@ -25,6 +25,14 @@ SCAN_DEEP_INTERVAL_MIN = cfg["scan_deep_interval_min"]
 STATUS_CHECK_HOURS = cfg["status_check_interval_hours"]
 ROLE_THRESHOLDS = {int(k): v for k, v in cfg["mammoth_role_thresholds"].items()}
 STRICT_MAMMOTH_ONLY = cfg.get("strict_mammoth_only", False)
+ALLOWED_REACTIONS = list(cfg.get("allowed_reactions", [MAMMOTH_UNICODE]))
+
+
+def normalize_emoji(e) -> str:
+    return str(e).replace("\ufe0f", "")
+
+
+ALLOWED_REACTIONS_NORM = {normalize_emoji(e) for e in ALLOWED_REACTIONS}
 
 DATA_DIR = Path("data")
 DATA_DIR.mkdir(exist_ok=True)
@@ -537,6 +545,50 @@ async def mammoth_roles(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
     await recalculate_all_roles()
     await interaction.followup.send("✅ Роли пересчитаны по статистике.", ephemeral=True)
+
+
+@mammoth_group.command(name="cleanreactions", description="Убрать все реакции, кроме разрешённых")
+async def mammoth_cleanreactions(interaction: discord.Interaction):
+    if interaction.user.id not in ALLOWED_USER_IDS:
+        await interaction.response.send_message("❌ Недостаточно прав.", ephemeral=True)
+        return
+    await interaction.response.defer(ephemeral=True)
+
+    ch = bot.get_channel(TARGET_CHANNEL_ID)
+    if not ch:
+        await interaction.followup.send("❌ Целевой канал не найден.", ephemeral=True)
+        return
+
+    await interaction.followup.send("🧹 Чищу реакции...", ephemeral=True)
+
+    async def run():
+        checked = 0
+        removed = 0
+        errors = 0
+        try:
+            async for msg in ch.history(limit=None):
+                checked += 1
+                for reaction in list(msg.reactions):
+                    if normalize_emoji(reaction.emoji) in ALLOWED_REACTIONS_NORM:
+                        continue
+                    try:
+                        await msg.clear_reaction(reaction.emoji)
+                        removed += 1
+                    except discord.Forbidden:
+                        errors += 1
+                    except discord.HTTPException:
+                        pass
+                if checked % 25 == 0:
+                    await asyncio.sleep(1)
+            text = f"✅ Проверено сообщений: {checked}, убрано реакций: {removed}."
+            if errors:
+                text += f"\n⚠️ Ошибок доступа: {errors} — нужно право «Управлять сообщениями»."
+            await interaction.followup.send(text, ephemeral=True)
+        except Exception as e:
+            logger.error(f"Ошибка очистки реакций: {e}\n{traceback.format_exc()}")
+            await interaction.followup.send("❌ Ошибка во время очистки. Смотри лог.", ephemeral=True)
+
+    asyncio.create_task(run())
 
 
 # ---------- config группа ----------
