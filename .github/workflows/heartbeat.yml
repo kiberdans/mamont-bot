@@ -1,0 +1,23 @@
+name: heartbeat
+
+on:
+  schedule:
+    - cron: "0 0 1 * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Touch repo to keep schedules enabled
+        run: |
+          date -u +"%Y-%m-%dT%H:%M:%SZ" > .heartbeat
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add .heartbeat
+          git commit -m "heartbeat" || exit 0
+          git push

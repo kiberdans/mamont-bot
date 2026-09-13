@@ -1,0 +1,22 @@
+{
+  "token": "DISCORD_BOT_TOKEN",
+  "target_channel_id": 0,
+  "allowed_user_ids": [],
+  "mammoth_emoji_id": "123456789012345678",
+  "mammoth_unicode": "🦣",
+  "required_status": "🦣",
+  "history_quick_limit": 50,
+  "history_deep_limit": 500,
+  "deep_scan_batch_size": 40,
+  "deep_scan_batch_delay_sec": 5,
+  "scan_quick_interval_sec": 5,
+  "scan_deep_interval_min": 5,
+  "status_check_interval_hours": 1,
+  "mammoth_role_thresholds": {},
+  "strict_mammoth_only": true,
+  "cloudflare": {
+    "account_id": "CLOUDFLARE_ACCOUNT_ID",
+    "database_id": "CLOUDFLARE_D1_DATABASE_ID",
+    "api_token": "CLOUDFLARE_API_TOKEN"
+  }
+}

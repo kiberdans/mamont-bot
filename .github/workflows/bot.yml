@@ -1,0 +1,35 @@
+name: mamont-bot
+
+on:
+  schedule:
+    - cron: "0 */5 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: mamont-bot
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Write config
+        env:
+          CONFIG_JSON: ${{ secrets.CONFIG_JSON }}
+        run: printf '%s' "$CONFIG_JSON" > config.json
+
+      - name: Run bot
+        run: |
+          mkdir -p data
+          timeout 355m python -u mamont.py || true
