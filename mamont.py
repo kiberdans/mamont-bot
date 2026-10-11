@@ -518,19 +518,19 @@ class StatsView(discord.ui.View):
     )
     async def stats_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         try:
-            await asyncio.wait_for(interaction.response.defer(ephemeral=True), timeout=2.5)
+            await asyncio.wait_for(interaction.response.defer(), timeout=2.5)
         except (asyncio.TimeoutError, discord.NotFound):
             return
-        await interaction.followup.send(embed=await build_stats_embed(interaction.guild), ephemeral=True)
+        await interaction.followup.send(embed=await build_stats_embed(interaction.guild))
 
 
 @mammoth_group.command(name="stats", description="Общая статистика мамонтов на сервере")
 async def mammoth_stats(interaction: discord.Interaction):
     try:
-        await asyncio.wait_for(interaction.response.defer(ephemeral=True), timeout=2.5)
+        await asyncio.wait_for(interaction.response.defer(), timeout=2.5)
     except (asyncio.TimeoutError, discord.NotFound):
         return
-    await interaction.followup.send(embed=await build_stats_embed(interaction.guild), ephemeral=True)
+    await interaction.followup.send(embed=await build_stats_embed(interaction.guild))
 
 
 @mammoth_group.command(name="panel", description="Отправить в чат кнопку статистики")
