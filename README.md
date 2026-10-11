@@ -11,7 +11,8 @@ Discord-бот для учёта «мамонтов»: считает сообщ
 - **Флаг статуса**: наличие 🦣 в кастомном статусе записывается в БД (`users.has_status`), но на учёт не влияет и роли не снимает.
 - **Очистка реакций**: команда убирает все реакции, кроме разрешённых.
 - **Статистика**: общая, по пользователю, топ-10, кнопка-панель.
-- **Надёжность**: идемпотентный журнал сообщений в D1 (без двойного счёта), офлайн-очередь, чекпоинт и heartbeat в D1.
+- **Надёжность**: идемпотентный журнал сообщений в D1 (без двойного счёта), догон пропущенных сообщений от старых к новым, офлайн-очередь, чекпоинт и heartbeat в D1.
+- **Персистентный конфиг**: изменения через `/mammoth ...` хранятся в D1 (`meta.config`) и переживают рестарт job'а (файл `config.json` на Actions эфемерный).
 
 ## Архитектура
 
@@ -19,8 +20,8 @@ Discord-бот для учёта «мамонтов»: считает сообщ
 Discord  <—gateway—  GitHub Actions (mamont.py)  —HTTP—>  Cloudflare D1
 ```
 
-- **GitHub Actions** запускает бота job'ом на ~6 часов; расписание каждые 5 часов и `concurrency` обеспечивают непрерывную работу.
-- **Cloudflare D1** — источник истины: таблицы `messages` (журнал), `users` (агрегаты), `meta` (чекпоинт `last_msg`, `commands_hash`, `heartbeat`).
+- **GitHub Actions** запускает бота job'ом на ~6 часов; ежечасное расписание и `concurrency` не дают боту «падать» между запусками.
+- **Cloudflare D1** — источник истины: таблицы `messages` (журнал), `users` (агрегаты + флаг статуса), `meta` (чекпоинт `last_msg`, `commands_hash`, `heartbeat`, `config`).
 - Токены хранятся в **GitHub Actions Secrets** (`CONFIG_JSON`) и в репозиторий не попадают.
 
 ## Команды
@@ -73,6 +74,8 @@ Discord  <—gateway—  GitHub Actions (mamont.py)  —HTTP—>  Cloudflare D1
 
 - `CONFIG_JSON` — содержимое `config.json` целиком (Repository → Settings → Secrets and variables → Actions).
 
+> Настройки, изменяемые командами (`whitelist`, `threshold`, `strict`, лимиты, интервалы, `status`), сохраняются в D1 (`meta.config`) и при старте **перекрывают** значения из `CONFIG_JSON`. Токен и доступы к Cloudflare в D1 не хранятся и всегда берутся из секрета.
+
 ## Развёртывание
 
 1. Создать D1-базу и применить схему:
@@ -82,7 +85,8 @@ Discord  <—gateway—  GitHub Actions (mamont.py)  —HTTP—>  Cloudflare D1
      count INTEGER NOT NULL, ts TEXT NOT NULL
    );
    CREATE TABLE IF NOT EXISTS users (
-     user_id TEXT PRIMARY KEY, total INTEGER NOT NULL DEFAULT 0, last_seen TEXT
+     user_id TEXT PRIMARY KEY, total INTEGER NOT NULL DEFAULT 0, last_seen TEXT,
+     has_status INTEGER NOT NULL DEFAULT 0, status_checked TEXT
    );
    CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
 

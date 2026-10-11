@@ -49,6 +49,10 @@ LAST_MSG_FILE = DATA_DIR / "last_msg.txt"
 last_processed_message_id = 0
 _last_msg_dirty = False
 
+user_totals: dict[int, int] = {}
+user_status: dict[int, bool] = {}
+_bootstrapped = False
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
 logger = logging.getLogger(__name__)
 
@@ -59,21 +63,89 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 
 
 # ==================== Утилиты ====================
-def save_config():
-    cfg["allowed_user_ids"] = list(ALLOWED_USER_IDS)
-    cfg["required_status"] = REQUIRED_STATUS
-    cfg["target_channel_id"] = TARGET_CHANNEL_ID
-    cfg["history_quick_limit"] = QUICK_LIMIT
-    cfg["history_deep_limit"] = DEEP_LIMIT
-    cfg["deep_scan_batch_size"] = BATCH_SIZE
-    cfg["deep_scan_batch_delay_sec"] = BATCH_DELAY
-    cfg["scan_quick_interval_sec"] = SCAN_QUICK_INTERVAL
-    cfg["scan_deep_interval_min"] = SCAN_DEEP_INTERVAL_MIN
-    cfg["status_check_interval_hours"] = STATUS_CHECK_HOURS
-    cfg["mammoth_role_thresholds"] = {str(k): v for k, v in ROLE_THRESHOLDS.items()}
-    cfg["strict_mammoth_only"] = STRICT_MAMMOTH_ONLY
+def current_config_dict() -> dict:
+    return {
+        "allowed_user_ids": sorted(int(i) for i in ALLOWED_USER_IDS),
+        "required_status": REQUIRED_STATUS,
+        "target_channel_id": TARGET_CHANNEL_ID,
+        "history_quick_limit": QUICK_LIMIT,
+        "history_deep_limit": DEEP_LIMIT,
+        "deep_scan_batch_size": BATCH_SIZE,
+        "deep_scan_batch_delay_sec": BATCH_DELAY,
+        "scan_quick_interval_sec": SCAN_QUICK_INTERVAL,
+        "scan_deep_interval_min": SCAN_DEEP_INTERVAL_MIN,
+        "status_check_interval_hours": STATUS_CHECK_HOURS,
+        "mammoth_role_thresholds": {str(k): v for k, v in ROLE_THRESHOLDS.items()},
+        "strict_mammoth_only": STRICT_MAMMOTH_ONLY,
+    }
+
+
+def _write_config_file():
+    cfg.update(current_config_dict())
     with open("config.json", "w", encoding="utf-8") as f:
         json.dump(cfg, f, indent=2, ensure_ascii=False)
+
+
+def apply_persisted_config(data: dict):
+    global REQUIRED_STATUS, TARGET_CHANNEL_ID, QUICK_LIMIT, DEEP_LIMIT
+    global BATCH_SIZE, BATCH_DELAY, SCAN_QUICK_INTERVAL, SCAN_DEEP_INTERVAL_MIN
+    global STATUS_CHECK_HOURS, STRICT_MAMMOTH_ONLY
+    if "allowed_user_ids" in data:
+        ALLOWED_USER_IDS.clear()
+        ALLOWED_USER_IDS.update(int(i) for i in data["allowed_user_ids"])
+    if "required_status" in data:
+        REQUIRED_STATUS = data["required_status"]
+    if "target_channel_id" in data:
+        TARGET_CHANNEL_ID = int(data["target_channel_id"])
+    if "history_quick_limit" in data:
+        QUICK_LIMIT = int(data["history_quick_limit"])
+    if "history_deep_limit" in data:
+        DEEP_LIMIT = int(data["history_deep_limit"])
+    if "deep_scan_batch_size" in data:
+        BATCH_SIZE = int(data["deep_scan_batch_size"])
+    if "deep_scan_batch_delay_sec" in data:
+        BATCH_DELAY = int(data["deep_scan_batch_delay_sec"])
+    if "scan_quick_interval_sec" in data:
+        SCAN_QUICK_INTERVAL = int(data["scan_quick_interval_sec"])
+    if "scan_deep_interval_min" in data:
+        SCAN_DEEP_INTERVAL_MIN = int(data["scan_deep_interval_min"])
+    if "status_check_interval_hours" in data:
+        STATUS_CHECK_HOURS = int(data["status_check_interval_hours"])
+    if "strict_mammoth_only" in data:
+        STRICT_MAMMOTH_ONLY = bool(data["strict_mammoth_only"])
+    if "mammoth_role_thresholds" in data:
+        ROLE_THRESHOLDS.clear()
+        ROLE_THRESHOLDS.update({int(k): v for k, v in data["mammoth_role_thresholds"].items()})
+
+
+async def save_config():
+    data = current_config_dict()
+    try:
+        _write_config_file()
+    except OSError as e:
+        logger.warning(f"Не удалось записать config.json: {e}")
+    try:
+        await db.set_meta("config", json.dumps(data, ensure_ascii=False))
+    except Exception as e:
+        logger.warning(f"Не удалось сохранить конфиг в D1: {e}")
+
+
+async def load_persisted_config():
+    try:
+        raw = await db.get_meta("config")
+    except Exception as e:
+        logger.warning(f"Не удалось прочитать конфиг из D1: {e}")
+        return
+    if raw:
+        try:
+            apply_persisted_config(json.loads(raw))
+            _write_config_file()
+            logger.info("Конфиг загружен из D1")
+        except Exception as e:
+            logger.warning(f"Некорректный конфиг в D1: {e}")
+    else:
+        await save_config()
+        logger.info("Конфиг в D1 отсутствует — сохранил текущий")
 
 
 def update_last_message_id(msg_id: int):
@@ -81,11 +153,6 @@ def update_last_message_id(msg_id: int):
     if msg_id > last_processed_message_id:
         last_processed_message_id = msg_id
         _last_msg_dirty = True
-        try:
-            with open(LAST_MSG_FILE, "w") as f:
-                f.write(str(msg_id))
-        except OSError:
-            pass
 
 
 # ==================== Проверки ====================
@@ -185,12 +252,16 @@ async def process_message(msg: discord.Message, guild: discord.Guild):
     ts = msg.created_at.astimezone(timezone.utc).isoformat()
     inserted = await db.record_message(msg.id, member.id, 1, ts)
     if inserted:
-        total = await db.get_user_total(member.id)
+        total = user_totals.get(member.id, 0) + 1
+        user_totals[member.id] = total
         await update_user_roles(member, total)
-    try:
-        await db.set_status(member.id, has_status)
-    except Exception as e:
-        logger.warning(f"Не удалось обновить статус {member.id}: {e}")
+
+    if user_status.get(member.id) != has_status:
+        try:
+            await db.set_status(member.id, has_status)
+            user_status[member.id] = has_status
+        except Exception as e:
+            logger.warning(f"Не удалось обновить статус {member.id}: {e}")
 
     update_last_message_id(msg.id)
 
@@ -198,23 +269,23 @@ async def process_message(msg: discord.Message, guild: discord.Guild):
 # ==================== Сканирование истории ====================
 async def run_scan(channel, limit: int, batch_mode: bool = False, ignore_last_id: bool = False):
     guild = channel.guild
-    collected = []
     max_retries = 3
+    floor = last_processed_message_id
 
     for attempt in range(1, max_retries + 1):
+        collected = []
         try:
             async for m in channel.history(limit=limit):
-                if not ignore_last_id and m.id <= last_processed_message_id:
+                if not ignore_last_id and m.id <= floor:
                     break
                 collected.append(m)
                 if batch_mode and len(collected) >= BATCH_SIZE:
-                    for msg in collected:
+                    for msg in reversed(collected):
                         await process_message(msg, guild)
                     collected.clear()
                     await asyncio.sleep(BATCH_DELAY)
-            if collected:
-                for msg in collected:
-                    await process_message(msg, guild)
+            for msg in reversed(collected):
+                await process_message(msg, guild)
             return
         except (asyncio.TimeoutError, discord.HTTPException, ConnectionError) as e:
             logger.warning(f"Сетевая ошибка при сканировании (попытка {attempt}/{max_retries}): {e}")
@@ -280,29 +351,37 @@ async def scan_deep():
 
 @tasks.loop(hours=STATUS_CHECK_HOURS)
 async def status_verification():
-    ch = bot.get_channel(TARGET_CHANNEL_ID)
-    if not ch:
-        return
-    guild = ch.guild
-    for row in await db.get_all_users():
-        uid = int(row["user_id"])
-        try:
-            member = await guild.fetch_member(uid)
-        except asyncio.TimeoutError:
-            logger.warning(f"Таймаут проверки статуса {uid}")
-            continue
-        except discord.NotFound:
-            continue
-        except Exception as e:
-            logger.warning(f"Ошибка проверки статуса {uid}: {e}")
-            continue
+    global user_totals, user_status
+    try:
+        ch = bot.get_channel(TARGET_CHANNEL_ID)
+        if not ch:
+            return
+        guild = ch.guild
+        rows = await db.get_all_users()
+        user_totals = {int(r["user_id"]): int(r["total"]) for r in rows}
+        for row in rows:
+            uid = int(row["user_id"])
+            try:
+                member = await guild.fetch_member(uid)
+            except asyncio.TimeoutError:
+                logger.warning(f"Таймаут проверки статуса {uid}")
+                continue
+            except discord.NotFound:
+                continue
+            except Exception as e:
+                logger.warning(f"Ошибка проверки статуса {uid}: {e}")
+                continue
 
-        has_status = (uid in ALLOWED_USER_IDS) or has_required_status(member)
-        try:
-            await db.set_status(uid, has_status)
-        except Exception as e:
-            logger.warning(f"Не удалось сохранить статус {uid}: {e}")
-        await asyncio.sleep(0.5)
+            has_status = (uid in ALLOWED_USER_IDS) or has_required_status(member)
+            if user_status.get(uid) != has_status:
+                try:
+                    await db.set_status(uid, has_status)
+                    user_status[uid] = has_status
+                except Exception as e:
+                    logger.warning(f"Не удалось сохранить статус {uid}: {e}")
+            await asyncio.sleep(0.5)
+    except Exception:
+        logger.error(f"Ошибка проверки статусов:\n{traceback.format_exc()}")
 
 
 @tasks.loop(seconds=30)
@@ -312,6 +391,10 @@ async def flush_state_loop():
         try:
             await db.set_meta("last_msg", str(last_processed_message_id))
             _last_msg_dirty = False
+            try:
+                LAST_MSG_FILE.write_text(str(last_processed_message_id))
+            except OSError:
+                pass
         except Exception as e:
             logger.warning(f"Не удалось сохранить чекпоинт: {e}")
     try:
@@ -346,7 +429,7 @@ async def whitelist(interaction: discord.Interaction, action: str, user: discord
             await interaction.response.send_message(f"ℹ️ {user.mention} уже в белом списке.", ephemeral=True)
         else:
             ALLOWED_USER_IDS.add(user.id)
-            save_config()
+            await save_config()
             await interaction.response.send_message(f"✅ {user.mention} добавлен в белый список.", ephemeral=True)
             logger.info(f"Whitelist add: {user} ({user.id})")
 
@@ -358,7 +441,7 @@ async def whitelist(interaction: discord.Interaction, action: str, user: discord
             await interaction.response.send_message(f"⚠️ {user.mention} не найден в белом списке.", ephemeral=True)
         else:
             ALLOWED_USER_IDS.discard(user.id)
-            save_config()
+            await save_config()
             ch = bot.get_channel(TARGET_CHANNEL_ID)
             if ch and ch.guild:
                 member = ch.guild.get_member(user.id)
@@ -592,7 +675,7 @@ async def config_status(interaction: discord.Interaction, text: str):
         return
     global REQUIRED_STATUS
     REQUIRED_STATUS = text
-    save_config()
+    await save_config()
     await interaction.response.send_message(f"✅ Требуемый статус изменён на `{text}`", ephemeral=True)
 
 
@@ -608,7 +691,7 @@ async def config_strict(interaction: discord.Interaction, mode: str):
         return
     global STRICT_MAMMOTH_ONLY
     STRICT_MAMMOTH_ONLY = (mode == "on")
-    save_config()
+    await save_config()
     await interaction.response.send_message(f"✅ Строгий режим: **{'включен' if STRICT_MAMMOTH_ONLY else 'выключен'}**", ephemeral=True)
 
 
@@ -620,7 +703,7 @@ async def config_quick_limit(interaction: discord.Interaction, limit: int):
         return
     global QUICK_LIMIT
     QUICK_LIMIT = max(1, min(500, limit))
-    save_config()
+    await save_config()
     await interaction.response.send_message(f"✅ Быстрый лимит: {QUICK_LIMIT}", ephemeral=True)
 
 
@@ -632,7 +715,7 @@ async def config_deep_limit(interaction: discord.Interaction, limit: int):
         return
     global DEEP_LIMIT
     DEEP_LIMIT = max(1, min(2000, limit))
-    save_config()
+    await save_config()
     await interaction.response.send_message(f"✅ Глубокий лимит: {DEEP_LIMIT}", ephemeral=True)
 
 
@@ -644,7 +727,7 @@ async def config_quick_interval(interaction: discord.Interaction, seconds: int):
         return
     global SCAN_QUICK_INTERVAL
     SCAN_QUICK_INTERVAL = max(5, seconds)
-    save_config()
+    await save_config()
     restart_task(scan_quick, SCAN_QUICK_INTERVAL, interval_type="seconds")
     await interaction.response.send_message(f"✅ Быстрый интервал: {SCAN_QUICK_INTERVAL} сек.", ephemeral=True)
 
@@ -657,7 +740,7 @@ async def config_deep_interval(interaction: discord.Interaction, minutes: int):
         return
     global SCAN_DEEP_INTERVAL_MIN
     SCAN_DEEP_INTERVAL_MIN = max(1, minutes)
-    save_config()
+    await save_config()
     restart_task(scan_deep, SCAN_DEEP_INTERVAL_MIN, interval_type="minutes")
     await interaction.response.send_message(f"✅ Глубокий интервал: {SCAN_DEEP_INTERVAL_MIN} мин.", ephemeral=True)
 
@@ -670,7 +753,7 @@ async def config_status_check(interaction: discord.Interaction, hours: int):
         return
     global STATUS_CHECK_HOURS
     STATUS_CHECK_HOURS = max(1, hours)
-    save_config()
+    await save_config()
     restart_task(status_verification, STATUS_CHECK_HOURS, interval_type="hours")
     await interaction.response.send_message(f"✅ Проверка статусов: каждые {STATUS_CHECK_HOURS} час(ов)", ephemeral=True)
 
@@ -685,7 +768,7 @@ async def config_threshold(interaction: discord.Interaction, role: discord.Role,
         await interaction.response.send_message(f"❌ Роль {role.mention} не отслеживается.", ephemeral=True)
         return
     ROLE_THRESHOLDS[role.id] = count
-    save_config()
+    await save_config()
     await interaction.response.send_message(f"✅ Порог для {role.mention}: {count} мамонтов", ephemeral=True)
     asyncio.create_task(recalculate_all_roles())
 
@@ -718,11 +801,13 @@ async def config_rebuild(interaction: discord.Interaction):
 
 
 async def recalculate_all_roles():
+    global user_totals
     ch = bot.get_channel(TARGET_CHANNEL_ID)
     if not ch or not ch.guild:
         return
     guild = ch.guild
     totals = await db.get_totals()
+    user_totals = totals
     for uid, cnt in totals.items():
         member = guild.get_member(uid)
         if not member:
@@ -766,7 +851,12 @@ async def on_ready():
 
     bot.add_view(StatsView())
 
-    global last_processed_message_id
+    global last_processed_message_id, _bootstrapped
+    if _bootstrapped:
+        logger.info("Повторное подключение — инициализация уже выполнена")
+        return
+    _bootstrapped = True
+
     meta_last = None
     try:
         meta_last = await db.get_meta("last_msg")
@@ -786,10 +876,14 @@ async def on_ready():
 
     await db.flush_queue()
 
+    await load_persisted_config()
+
     ch = bot.get_channel(TARGET_CHANNEL_ID)
     if ch and ch.guild:
         logger.info("🔍 Стартовая проверка статусов...")
-        for row in await db.get_all_users():
+        rows = await db.get_all_users()
+        user_totals.update({int(r["user_id"]): int(r["total"]) for r in rows})
+        for row in rows:
             uid = int(row["user_id"])
             try:
                 member = await ch.guild.fetch_member(uid)
@@ -799,6 +893,7 @@ async def on_ready():
                 logger.warning(f"⚠️ {uid}: {e}")
                 continue
             has_status = (uid in ALLOWED_USER_IDS) or has_required_status(member)
+            user_status[uid] = has_status
             try:
                 await db.set_status(uid, has_status)
             except Exception as e:
@@ -806,6 +901,9 @@ async def on_ready():
             await asyncio.sleep(0.5)
         logger.info("✅ Стартовая проверка завершена.")
 
+    scan_quick.change_interval(seconds=SCAN_QUICK_INTERVAL)
+    scan_deep.change_interval(minutes=SCAN_DEEP_INTERVAL_MIN)
+    status_verification.change_interval(hours=STATUS_CHECK_HOURS)
     scan_quick.start()
     scan_deep.start()
     status_verification.start()
