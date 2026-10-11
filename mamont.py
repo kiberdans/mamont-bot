@@ -52,6 +52,7 @@ _last_msg_dirty = False
 user_totals: dict[int, int] = {}
 user_status: dict[int, bool] = {}
 _bootstrapped = False
+_rebuilding = False
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
 logger = logging.getLogger(__name__)
@@ -201,28 +202,34 @@ async def try_react(msg: discord.Message):
 async def update_user_roles(member: discord.Member, count: int):
     if not member.guild:
         return
-    sorted_thr = sorted(ROLE_THRESHOLDS.items(), key=lambda x: -x[1])
-    target = next((rid for rid, th in sorted_thr if count >= th), None)
-    if target:
-        role = member.guild.get_role(target)
-        if role and role not in member.roles:
-            try:
-                await member.add_roles(role, reason=f"🦣 Порог: {count}")
-                logger.info(f"Выдана роль {role.name} -> {member.display_name}")
-            except discord.HTTPException as e:
-                logger.error(f"Ошибка выдачи роли {role.name}: {e}")
-    else:
-        for rid in ROLE_THRESHOLDS:
-            r = member.guild.get_role(rid)
-            if r and r in member.roles:
+    target = next(
+        (rid for rid, th in sorted(ROLE_THRESHOLDS.items(), key=lambda x: -x[1]) if count >= th),
+        None,
+    )
+    for rid in ROLE_THRESHOLDS:
+        role = member.guild.get_role(rid)
+        if not role:
+            continue
+        if rid == target:
+            if role not in member.roles:
                 try:
-                    await member.remove_roles(r, reason=f"🦣 Ниже порога: {count}")
+                    await member.add_roles(role, reason=f"🦣 Порог: {count}")
+                    logger.info(f"Выдана роль {role.name} -> {member.display_name}")
                 except discord.HTTPException as e:
-                    logger.error(f"Ошибка снятия роли {r.name}: {e}")
+                    logger.error(f"Ошибка выдачи роли {role.name}: {e}")
+        elif role in member.roles:
+            try:
+                await member.remove_roles(role, reason=f"🦣 Порог: {count}")
+                logger.info(f"Снята роль {role.name} -> {member.display_name}")
+            except discord.HTTPException as e:
+                logger.error(f"Ошибка снятия роли {role.name}: {e}")
 
 
 # ==================== Главный обработчик ====================
 async def process_message(msg: discord.Message, guild: discord.Guild):
+    if _rebuilding:
+        return
+
     if msg.id <= last_processed_message_id:
         return
 
@@ -298,34 +305,39 @@ async def run_scan(channel, limit: int, batch_mode: bool = False, ignore_last_id
 
 async def full_rebuild(channel) -> int:
     """Полный пересбор статистики из всей истории канала. Возвращает число учтённых сообщений."""
-    await db.reset()
+    global _rebuilding
+    _rebuilding = True
+    try:
+        await db.reset()
 
-    batch = []
-    counted = 0
-    newest_id = 0
+        batch = []
+        counted = 0
+        newest_id = 0
 
-    async for m in channel.history(limit=None, oldest_first=True):
-        if m.id > newest_id:
-            newest_id = m.id
-        if m.author.bot:
-            continue
-        if not is_mammoth_message(m):
-            continue
-        ts = m.created_at.astimezone(timezone.utc).isoformat()
-        batch.append((str(m.id), str(m.author.id), 1, ts))
-        counted += 1
-        if len(batch) >= 50:
+        async for m in channel.history(limit=None, oldest_first=True):
+            if m.id > newest_id:
+                newest_id = m.id
+            if m.author.bot:
+                continue
+            if not is_mammoth_message(m):
+                continue
+            ts = m.created_at.astimezone(timezone.utc).isoformat()
+            batch.append((str(m.id), str(m.author.id), 1, ts))
+            counted += 1
+            if len(batch) >= 50:
+                await db.record_batch(batch)
+                batch.clear()
+
+        if batch:
             await db.record_batch(batch)
-            batch.clear()
 
-    if batch:
-        await db.record_batch(batch)
+        if newest_id:
+            update_last_message_id(newest_id)
 
-    if newest_id:
-        update_last_message_id(newest_id)
-
-    logger.info(f"Ребилд завершён: учтено {counted} сообщений")
-    return counted
+        logger.info(f"Ребилд завершён: учтено {counted} сообщений")
+        return counted
+    finally:
+        _rebuilding = False
 
 
 # ==================== Фоновые задачи ====================
