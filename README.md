@@ -40,7 +40,10 @@ Discord  <—gateway—  GitHub Actions (mamont.py)  —HTTP—>  Cloudflare D1
 | `/mammoth config quick_limit`, `deep_limit` | Лимиты сканирования |
 | `/mammoth config quick_interval`, `deep_interval` | Интервалы сканирования |
 | `/mammoth config status_check <часы>` | Интервал проверки статусов |
-| `/mammoth config threshold <role> <count>` | Порог роли |
+| `/mammoth config bind <role> <count>` | Привязать роль к порогу мамонтов (или обновить) |
+| `/mammoth config unbind <role>` | Отвязать роль от порога |
+| `/mammoth config thresholds` | Показать текущие привязки ролей |
+| `/mammoth config threshold <role> <count>` | То же, что `bind` (совместимость) |
 | `/mammoth config rebuild` | Пересобрать статистику из всей истории |
 
 ## Конфигурация

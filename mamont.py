@@ -770,19 +770,76 @@ async def config_status_check(interaction: discord.Interaction, hours: int):
     await interaction.response.send_message(f"✅ Проверка статусов: каждые {STATUS_CHECK_HOURS} час(ов)", ephemeral=True)
 
 
-@config_group.command(name="threshold", description="Изменить порог для роли")
-@app_commands.describe(role="Роль из списка", count="Новое количество мамонтов для этой роли")
+async def _bind_role_threshold(interaction: discord.Interaction, role: discord.Role, count: int):
+    if count < 1:
+        await interaction.response.send_message("❌ Количество мамонтов должно быть ≥ 1.", ephemeral=True)
+        return
+    existed = role.id in ROLE_THRESHOLDS
+    ROLE_THRESHOLDS[role.id] = count
+    await save_config()
+    action = "обновлена" if existed else "привязана"
+    await interaction.response.send_message(
+        f"✅ Роль {role.mention} {action}: порог {count} мамонтов.", ephemeral=True
+    )
+    logger.info(f"Role threshold {'updated' if existed else 'bound'}: {role.id} -> {count}")
+    asyncio.create_task(recalculate_all_roles())
+
+
+async def _unbind_role_threshold(interaction: discord.Interaction, role: discord.Role):
+    if role.id not in ROLE_THRESHOLDS:
+        await interaction.response.send_message(f"⚠️ Роль {role.mention} не привязана.", ephemeral=True)
+        return
+    del ROLE_THRESHOLDS[role.id]
+    await save_config()
+    await interaction.response.send_message(
+        f"🚫 Роль {role.mention} отвязана: бот больше её не выдаёт. "
+        f"У тех, у кого она уже есть, роль остаётся.",
+        ephemeral=True,
+    )
+    logger.info(f"Role threshold unbound: {role.id}")
+    asyncio.create_task(recalculate_all_roles())
+
+
+@config_group.command(name="bind", description="Привязать роль к количеству мамонтов (или обновить порог)")
+@app_commands.describe(role="Роль", count="Сколько мамонтов нужно для этой роли")
+async def config_bind(interaction: discord.Interaction, role: discord.Role, count: int):
+    if interaction.user.id not in ALLOWED_USER_IDS:
+        await interaction.response.send_message("❌ Недостаточно прав.", ephemeral=True)
+        return
+    await _bind_role_threshold(interaction, role, count)
+
+
+@config_group.command(name="unbind", description="Отвязать роль от количества мамонтов")
+@app_commands.describe(role="Роль")
+async def config_unbind(interaction: discord.Interaction, role: discord.Role):
+    if interaction.user.id not in ALLOWED_USER_IDS:
+        await interaction.response.send_message("❌ Недостаточно прав.", ephemeral=True)
+        return
+    await _unbind_role_threshold(interaction, role)
+
+
+@config_group.command(name="thresholds", description="Показать привязки ролей к порогам")
+async def config_thresholds(interaction: discord.Interaction):
+    if interaction.user.id not in ALLOWED_USER_IDS:
+        await interaction.response.send_message("❌ Недостаточно прав.", ephemeral=True)
+        return
+    if not ROLE_THRESHOLDS:
+        await interaction.response.send_message("📭 Нет привязанных ролей.", ephemeral=True)
+        return
+    lines = []
+    for rid, th in sorted(ROLE_THRESHOLDS.items(), key=lambda x: x[1]):
+        role = interaction.guild.get_role(rid) if interaction.guild else None
+        lines.append(f"• {role.mention if role else f'`{rid}`'} — {th} 🦣")
+    await interaction.response.send_message("🎖 **Пороги ролей:**\n" + "\n".join(lines), ephemeral=True)
+
+
+@config_group.command(name="threshold", description="Изменить или задать порог для роли")
+@app_commands.describe(role="Роль", count="Количество мамонтов для этой роли")
 async def config_threshold(interaction: discord.Interaction, role: discord.Role, count: int):
     if interaction.user.id not in ALLOWED_USER_IDS:
         await interaction.response.send_message("❌ Недостаточно прав.", ephemeral=True)
         return
-    if role.id not in ROLE_THRESHOLDS:
-        await interaction.response.send_message(f"❌ Роль {role.mention} не отслеживается.", ephemeral=True)
-        return
-    ROLE_THRESHOLDS[role.id] = count
-    await save_config()
-    await interaction.response.send_message(f"✅ Порог для {role.mention}: {count} мамонтов", ephemeral=True)
-    asyncio.create_task(recalculate_all_roles())
+    await _bind_role_threshold(interaction, role, count)
 
 
 @config_group.command(name="rebuild", description="Пересобрать статистику из всей истории канала")
