@@ -2,7 +2,7 @@ name: mamont-bot
 
 on:
   schedule:
-    - cron: "0 * * * *"
+    - cron: "*/5 * * * *"
   workflow_dispatch:
 
 concurrency:
@@ -33,3 +33,19 @@ jobs:
         run: |
           mkdir -p data
           timeout 355m python -u mamont.py || true
+
+      - name: Chain next run
+        if: always()
+        env:
+          GH_DISPATCH_TOKEN: ${{ secrets.GH_DISPATCH_TOKEN }}
+        run: |
+          if [ -z "$GH_DISPATCH_TOKEN" ]; then
+            echo "GH_DISPATCH_TOKEN is not set; relying on the schedule"
+            exit 0
+          fi
+          curl -fsS -X POST \
+            -H "Authorization: Bearer $GH_DISPATCH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/workflows/bot.yml/dispatches" \
+            -d '{"ref":"main"}'
+          echo "Next run dispatched"
