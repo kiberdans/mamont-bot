@@ -20,7 +20,7 @@ Discord-бот для учёта «мамонтов»: считает сообщ
 Discord  <—gateway—  GitHub Actions (mamont.py)  —HTTP—>  Cloudflare D1
 ```
 
-- **GitHub Actions** запускает бота job'ом на ~6 часов; ежечасное расписание и `concurrency` не дают боту «падать» между запусками.
+- **GitHub Actions** запускает бота job'ом на ~6 часов. Каждый ран перед завершением сам запускает следующий (`Chain next run` + секрет `GH_DISPATCH_TOKEN`), поэтому простоев практически нет; cron `*/5 * * * *` — страховка на случай, если self-dispatch не сработал.
 - **Cloudflare D1** — источник истины: таблицы `messages` (журнал), `users` (агрегаты + флаг статуса), `meta` (чекпоинт `last_msg`, `commands_hash`, `heartbeat`, `config`).
 - Токены хранятся в **GitHub Actions Secrets** (`CONFIG_JSON`) и в репозиторий не попадают.
 
@@ -76,6 +76,7 @@ Discord  <—gateway—  GitHub Actions (mamont.py)  —HTTP—>  Cloudflare D1
 ### Секреты
 
 - `CONFIG_JSON` — содержимое `config.json` целиком (Repository → Settings → Secrets and variables → Actions).
+- `GH_DISPATCH_TOKEN` — GitHub-токен с правами `actions: write`/`workflow`, которым ран запускает следующий. Без него бот работает, но с паузами (только cron).
 
 > Настройки, изменяемые командами (`whitelist`, `threshold`, `strict`, лимиты, интервалы, `status`), сохраняются в D1 (`meta.config`) и при старте **перекрывают** значения из `CONFIG_JSON`. Токен и доступы к Cloudflare в D1 не хранятся и всегда берутся из секрета.
 
